@@ -62,7 +62,7 @@ class DapNet:
 				res = requests.post(self.api_proto + self.api_url + self.api_prefix + json_path, data=payload, headers=headers, auth=HTTPBasicAuth(self.api_user, self.api_pass), timeout=self.api_timeout)
 			except:
 				fail = True
-		if fail or res.status_code != 200:
+		if fail or (res.status_code != 200 and res.status_code != 201):
 			self.debugme("API not reachable, trying another one - if available...")
 			self.dapnet_failure.append(self.api_url)
 			if not self.use_alternate_port:
@@ -99,6 +99,12 @@ class DapNet:
 	def get_nodelist(self):
 		nodes = self.makereq("nodes")
 		return nodes
+
+	def get_dapnetnode(self):
+		return self.api_url
+
+	def get_dapnetuser(self):
+		return self.api_user
 
 	def check_user(self, callsign):
 		found = False
@@ -156,7 +162,6 @@ class DapNet:
 				self.config.set('nodes', node["name"], node["address"]["ip_addr"])
 		with open(self.config_file, 'w') as configfile:
 			self.config.write(configfile)
-		
 
 	def nodes_select(self):
 		self.config.read(self.config_file)

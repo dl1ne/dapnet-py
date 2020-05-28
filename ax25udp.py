@@ -422,6 +422,7 @@ class ax25udp:
 				# if no connection established, send disc
 				if self.conupd(conid) != "ESTABLISHED":
 					self.send(addr, conid, self.L2_CTRL_DISC, poll = True)
+					continue
 
 				# if callback is set, run into more functions
 				# callback have to return (disc, tosend):

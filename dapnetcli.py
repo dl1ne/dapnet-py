@@ -56,7 +56,11 @@ class DapNetCLI:
 	list_user = {}
 	list_rubric = {}
 
+	out = ""
+
 	page_emergency = False
+
+	reqDISC = False
 
 	def __init__(self, my_call, api_user, api_pass, default_regions = [ "dl-ni" ], api_url = ""):
 		self.api_user = api_user
@@ -91,14 +95,22 @@ class DapNetCLI:
 		eval("self.cmd_" + func + "()")
 
 
-	def msg(self, txt):
-		print(txt)
-
-	def fmsg(self, txt, fields, newline = True):
+	def msg(self, txt, newline = True):
+		# print(txt)
+		self.out += txt
 		if newline:
-			print(txt % fields)
-		else:
-			print(txt % fields, end='')
+			self.out += '\r'
+
+
+	def pad(self, txtin, flen, left = False, pchar = " "):
+		txt = str(txtin)
+		for i in range(flen-len(txt)):
+			if left:
+				txt = pchar + txt
+			else:
+				txt += pchar
+		return txt
+
 
 	def sortTuple(self, tup, field = 1):
 		lst = len(tup)
@@ -147,7 +159,7 @@ class DapNetCLI:
 			if filter != "" and filter not in tmp[e]:
 				continue
 			v = eval(tmp[e])
-			self.fmsg("%-18s : %s", (e, v))
+			self.msg(self.pad(e,18) + str(v))
 
 
 	def cmd_sregion(self):
@@ -183,7 +195,7 @@ class DapNetCLI:
 		for node in self.list_node:
 			if self.argparse and not self.arguments[1] in node["name"]:
 				continue
-			self.fmsg("%-16s Status: %s", (node["name"], node["status"]))
+			self.msg(self.pad(node["name"],16) + " Status: " + node["status"])
 
 	def cmd_userlist(self):
 		self.msg("- USERLIST -")
@@ -196,7 +208,7 @@ class DapNetCLI:
 			if count > 4:
 				self.msg(" ")
 				count = 0
-			self.fmsg("%-16s", user["name"], False)
+			self.msg(self.pad(user["name"], 16), newline = False)
 			count = count + 1
 		self.msg(" ")
 
@@ -205,22 +217,22 @@ class DapNetCLI:
 		self.msg("- TRANSMITTERLIST -")
 		if len(self.list_tx) < 1:
 			self.list_tx = self.sortTuple(self.api.get_transmitterlist(), "name")
-		self.fmsg("%-6.6s : %-6.6s : %-24.24s : %s", ("CALL", "NODE", "TYPE", "STATUS"))
+		self.msg(self.pad("CALL",6) + " : " + self.pad("NODE",6) + " : " + self.pad("TYPE",24) + " : " + "STATUS")
 		for tx in self.list_tx:
 			if self.argparse and not self.arguments[1] in tx["name"] and (tx["nodeName"] == None or not self.arguments[1] in tx["nodeName"]):
 				continue
-			self.fmsg("%-6.6s : %-6.6s : %-24.24s : %s", (tx["name"], tx["nodeName"], tx["deviceType"], tx["status"]))
+			self.msg(self.pad(tx["name"],6) + " : " + self.pad(tx["nodeName"],6) + " : " + self.pad(tx["deviceType"],24) + " : " +tx["status"])
 
 
 	def cmd_rubriclist(self):
 		self.msg("- RUBRICLIST -")
 		if len(self.list_rubric) < 1:
 			self.list_rubric = self.sortTuple(self.api.get_rubriclist(), "number")
-		self.fmsg("%02s : %-16.16s : %-14.14s : %s", ("NR", "NAME", "LABEL", "TRANSMITTERGROUPS"))
+		self.msg("NR : " + self.pad("NAME",16) + " : " + self.pad("LABEL",14) + " : TRANSMITTERGROUPS")
 		for r in self.list_rubric:
 			if self.argparse and not self.arguments[1] in r["name"] and not self.arguments[1] in str(r["number"]):
 				continue
-			self.fmsg("%02d : %-16.16s : %-14.14s : %s", (r["number"], r["name"], r["label"], ','.join(r["transmitterGroupNames"])))
+			self.msg(self.pad(r["number"],2,left = True,pchar="0") + " : " + self.pad(r["name"],16) + " : " + self.pad(r["label"],14) + " : " ','.join(r["transmitterGroups"]))
 
 
 	def cmd_help(self):
@@ -228,7 +240,7 @@ class DapNetCLI:
 		keylist = self.commands.keys()
 		keylist.sort()
 		for key in keylist:
-			self.fmsg("%-15s - %s", (key, self.commands[key]))
+			self.msg(str(self.pad(key,15)) + " - " + str(self.commands[key]))
 
 	def cmd_quit(self):
 		self.disconnect()
@@ -237,7 +249,7 @@ class DapNetCLI:
 		self.disconnect()
 
 	def disconnect(self):
-		exit(0)
+		self.reqDISC = True
 
 	def run(self, usercall):
 		self.user_call = usercall
@@ -246,3 +258,13 @@ class DapNetCLI:
 		loop = True
 		while loop:
 			self.check_input(raw_input(self.prompt))
+
+	def udpapi(self):
+		self.api = dapnet.DapNet(self.api_user, self.api_pass, self.api_url)
+
+	def udphandler(self, usercall, txt):
+		self.reqDISC = False
+		self.user_call = usercall
+		self.out = ""
+		self.check_input(txt)
+		return (self.reqDISC, str(self.out))

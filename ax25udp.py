@@ -120,7 +120,6 @@ class ax25udp:
 	# Connection Table
 	connections = {}
 
-
 	# build connections id
 	def conid(self, packet, rx = True):
 		if rx:
@@ -136,12 +135,12 @@ class ax25udp:
 			self.connections[conid]["tx_seq"] = 0
 			self.connections[conid]["rx_seq"] = 0
 
-	# remove connectionentry
+	# remove connection entry
 	def conrm(self, conid):
 		if conid in self.connections:
 			del self.connections[conid]
 
-
+	# update connection state
 	def conupd(self, conid, state = ""):
 		if state != "":
 			self.connections[conid]["state"] = state
@@ -149,16 +148,13 @@ class ax25udp:
 			return "UNKNOWN"
 		return self.connections[conid]["state"]
 
-
-
+	# set banner for connect
 	def banner(self, msg = ""):
 		if msg:
 			if msg[:-2] != '\r':
 				msg = msg + '\r'
 			self.banner = msg
 		return self.banner
-
-
 
 	# decode received packet
 	def decode(self, packet, rx = False):
@@ -300,10 +296,11 @@ class ax25udp:
 		if ssid > 15:
 			raise
 		result = ""
+		# encode callsign
 		for letter in address.ljust(6):
 			result += chr(ord(letter.upper()) << 1)
-
-		#rssid = (int(ssid) << 1) | 0b01100000 | (0b10000001 if final else 0) | (self.L2_MASK_VIA if via else 0)
+		# encode ssid and if needed,
+		# set some flags for direct, via or final into ssid field
 		rssid = (int(ssid) << 1) | 0b1100000
 		if direct:		rssid = rssid | self.L2_MASK_VIA
 		if not direct and via:	rssid = rssid & ~self.L2_MASK_VIA
@@ -316,24 +313,30 @@ class ax25udp:
 		packet = self.encode_address(self.connections[conid]["src_call"], self.connections[conid]["src_ssid"])
 		rlen = len(self.connections[conid]["digipeater"])
 		if rlen > 0:
+			# repeaters/via must fill into frame
 			packet += self.encode_address(self.connections[conid]["dst_call"], self.connections[conid]["dst_ssid"], direct = True)
 			rptcount = 0
 			for i in self.connections[conid]["digipeater"]:
+				# loop for adding one repeater after another, last repeater becames final flag
 				rptcount = rptcount + 1
 				if rptcount == rlen:	final = True
 				packet += self.encode_address(i[0], i[1], via = True, final = final)
 		else:
+			# seems to be direct communication, not adding
+			# repeaters/via field, and set direct flags
 			packet += self.encode_address(self.connections[conid]["dst_call"], self.connections[conid]["dst_ssid"], final = True, via = True, direct = True)
 
-
+		# poll/final flag is set
 		if poll:
 			packet += struct.pack("<B", ctrl | self.L2_MASK_POLL)
 		else:
+			# if packet is i frame, lets build sequence numbers for it
 			if ctrl == self.L2_CTRL_I:
 				left = self.connections[conid]["rx_seq"] << 5
 				right = self.connections[conid]["tx_seq"] << 1
 				packet += struct.pack("<B", (left | right))
 			else:
+				# otherwise, just put the control bit into
 				packet += struct.pack("<B", ctrl)
 
 		# I Frame, set Layer 3
@@ -370,30 +373,40 @@ class ax25udp:
 
 
 	def send(self, addr, conid, ctrl, msg = "", poll = False):
+		# build new packet and send it to socket
 		self.sock.sendto(self.build(conid, ctrl, msg, poll), addr)
+		# if packet is i frame, we have to increase our counter
 		if ctrl == self.L2_CTRL_I:
 			# increase tx sequence
 			if self.connections[conid]["tx_seq"] < 7:
+				# max counter is 7, so lets do +1
 				self.connections[conid]["tx_seq"] = self.connections[conid]["tx_seq"] + 1
 			else:
+				# max counter is reached, set it to zero
 				self.connections[conid]["tx_seq"] = 0
 
 
 	def prompt(self, addr, conid):
+		# build prompt for user interaction
 		self.send(addr, conid, self.L2_CTRL_I, self.connections[conid]["src_call"] + " de " + self.connections[conid]["dst_call"] + "-" + str(self.connections[conid]["dst_ssid"]) + "> ")
 
 
 	def listen(self, callback = None):
+		# lets bind our socket
 		self.sock.bind((self.host, self.port))
-		i = 0
-		self.recv = 0
-		self.tran = 0
+
+		# run listening loop forever
 		while True:
-			i = i + 1
-			data, addr = self.sock.recvfrom(2048) # buffer size is 1024 bytes
+			# try to receive data from socket
+			data, addr = self.sock.recvfrom(2048)
+			# parse incoming packet and get connection id
 			conid = self.decode(data, rx = True)
+
+			# incoming packet is not for me ;-(
 			if self.connections[conid]["dst_call"] != self.my_call or self.connections[conid]["dst_ssid"] != self.my_ssid:
 				continue
+
+			# incoming packet is connection request
 			if self.connections[conid]["ctrl"] == "SABM":
 				self.conmk(conid)
 				self.send(addr, conid, self.L2_CTRL_UA, "", poll = True)
@@ -403,16 +416,26 @@ class ax25udp:
 				if self.banner:
 					self.send(addr, conid, self.L2_CTRL_I, self.banner)
 				self.prompt(addr, conid)
+
+			# incoming packet is info frame
 			if self.connections[conid]["ctrl"] == "I":
-				# if no connection established
+				# if no connection established, send disc
 				if self.conupd(conid) != "ESTABLISHED":
-					self.send(addr, conid, self.L2_CTRL_UA, poll = True)
+					self.send(addr, conid, self.L2_CTRL_DISC, poll = True)
+
+				# if callback is set, run into more functions
+				# callback have to return (disc, tosend):
+				# disc   = bool, Should connection be disconnected? Maybe request from user?
+				# tosend = string, should we send an output to connected user?
 				if not callback == None:
 					(disc, tosend) = callback(self.connections[conid]["src_call"], self.connections[conid]["info"])
+					# if disconnect request received, send DISC
 					if disc:
 						self.send(addr, conid, self.L2_CTRL_DISC, poll = True)
 						self.conrm(conid)
 						continue
+					# if we have to send output, make sure that newline is set,
+					# buffer the string and send i frame packet
 					if tosend:
 						if tosend[:-2] != '\r':
 							tosend = tosend + '\r'
@@ -421,7 +444,10 @@ class ax25udp:
 							if len(tosend) > self.L2_INFOLEN:	plen = self.L2_INFOLEN
 							self.send(addr, conid, self.L2_CTRL_I, tosend[0:plen])
 							tosend = tosend[plen:]
+				# send prompt back
 				self.prompt(addr, conid)
+
+			# incoming packet is disconnect request
 			if self.connections[conid]["ctrl"] == "DISC":
 				# only respond to existing connections
 				if self.conupd(conid) == "ESTABLISHED":
@@ -429,5 +455,9 @@ class ax25udp:
 					self.conrm(conid)
 
 
-
+			# many more to fix here,
+			# have to check if frames received from peer correctly,
+			# handle frame and connection errors,
+			# etc.
+			# maybe if there is more time... :-)
 

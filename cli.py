@@ -12,6 +12,6 @@ cli = dapnetcli.DapNetCLI(nodecall, "<dapnet call>", "<dapnet password>")
 cli.udpapi() # start api
 
 ax25 = ax25udp.ax25udp(ax25udp_addr, ax25udp_port, nodecall, nodessid)
-ax25.banner("DAPNET AX25UDP/PY v0.1, by DL1NE")
+ax25.banner("DAPNET AX25UDP/PY v0.2, by DL1NE")
 ax25.listen(cli.udphandler)
 

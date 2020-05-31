@@ -116,7 +116,7 @@ class ax25udp:
 	L2_FRAME_DELAY	= 0.03	# some delay between packets
 
 	# Program Info
-	P_VERSION	= "0.1"
+	P_VERSION	= "0.2"
 	P_NAME		= "ax25udp-py"
 
 	# Welcome Banner

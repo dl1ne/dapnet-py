@@ -45,7 +45,9 @@ class DapNetCLI:
 					+	"please use the comma as seperator.\n"
 					+	"\n"
 					+	"Syntax:\n"
-					+	"sregion <destregion>\n" }
+					+	"sregion <destregion>\n",
+			"userlist":		"Syntax:\n"
+					+	"userlist [filter]\n" }
 
 
 	arguments = ""
@@ -97,13 +99,15 @@ class DapNetCLI:
 
 	def msg(self, txt, newline = True):
 		# print(txt)
-		self.out += txt
+		self.out += str(txt)
 		if newline:
 			self.out += '\r'
 
 
 	def pad(self, txtin, flen, left = False, pchar = " "):
-		txt = str(txtin)
+		if txtin == None:		txtin = ""
+		if isinstance(txtin, int):	txtin = str(txtin)
+		txt = str(txtin.encode('ascii'))
 		for i in range(flen-len(txt)):
 			if left:
 				txt = pchar + txt
@@ -205,7 +209,7 @@ class DapNetCLI:
 		for user in self.list_user:
 			if self.argparse and not self.arguments[1] in user["name"]:
 				continue
-			if count > 4:
+			if count > 3:
 				self.msg(" ")
 				count = 0
 			self.msg(self.pad(user["name"], 16), newline = False)
@@ -232,7 +236,7 @@ class DapNetCLI:
 		for r in self.list_rubric:
 			if self.argparse and not self.arguments[1] in r["name"] and not self.arguments[1] in str(r["number"]):
 				continue
-			self.msg(self.pad(r["number"],2,left = True,pchar="0") + " : " + self.pad(r["name"],16) + " : " + self.pad(r["label"],14) + " : " ','.join(r["transmitterGroups"]))
+			self.msg(self.pad(str(r["number"]), 2, left = True, pchar = "0") + " : " + self.pad(r["name"],16) + " : " + self.pad(r["label"],14) + " : " + ','.join(r["transmitterGroupNames"]))
 
 
 	def cmd_help(self):

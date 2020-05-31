@@ -7,7 +7,6 @@ import binascii
 import string
 import re
 import datetime
-import threading
 import time
 import crcmod
 
@@ -110,6 +109,13 @@ class ax25udp:
 	L2_MASK_POLL	= 0x10	# also final bit
 
 
+	# Frames
+	L2_MAX_FRAME	= -1	# max frames, without ack
+				# set to -1 is unlimited,
+				# frames send with delay from L2_FRAME_DELAY
+	L2_FRAME_DELAY	= 0.03	# some delay between packets
+
+	# Program Info
 	P_VERSION	= "0.1"
 	P_NAME		= "ax25udp-py"
 
@@ -119,6 +125,16 @@ class ax25udp:
 
 	# Connection Table
 	connections = {}
+
+	# Connection States
+	CON_STATE_INVALID	= 0x00
+	CON_STATE_NEW		= 0x01
+	CON_STATE_ESTABLISHED	= 0x02
+	CON_STATE_WAIT		= 0x04
+	CON_STATE_TIMEOUT	= 0x08
+
+	# Connection Masks
+	CON_MASK_CMD		= 0x06
 
 	# build connections id
 	def conid(self, packet, rx = True):
@@ -134,6 +150,8 @@ class ax25udp:
 			self.connections[conid] = {}
 			self.connections[conid]["tx_seq"] = 0
 			self.connections[conid]["rx_seq"] = 0
+			self.connections[conid]["tx_queue"] = []
+			self.connections[conid]["prompt"] = False
 
 	# remove connection entry
 	def conrm(self, conid):
@@ -141,11 +159,11 @@ class ax25udp:
 			del self.connections[conid]
 
 	# update connection state
-	def conupd(self, conid, state = ""):
-		if state != "":
+	def conupd(self, conid, state = None):
+		if state != None:
 			self.connections[conid]["state"] = state
 		if not "state" in self.connections[conid]:
-			return "UNKNOWN"
+			return self.CON_STATE_INVALID
 		return self.connections[conid]["state"]
 
 	# set banner for connect
@@ -186,6 +204,7 @@ class ax25udp:
 
 		# get control field
 		self.connections[conid]["ctrl"] = self.parseAX25ctrl(packet[0:1])
+		self.connections[conid]["poll"] = ord(packet[0:1]) & self.L2_MASK_POLL
 
 		# discard control field, save byte for I Frame, to decode sequences
 		ctrl = packet[0:1]
@@ -223,6 +242,8 @@ class ax25udp:
 				self.connections[conid]["rx_seq"] = txn + 1
 			else:
 				self.connections[conid]["rx_seq"] = 0
+
+		(byte,) = struct.unpack("<B", ctrl)
 
 		return conid
 
@@ -326,18 +347,24 @@ class ax25udp:
 			# repeaters/via field, and set direct flags
 			packet += self.encode_address(self.connections[conid]["dst_call"], self.connections[conid]["dst_ssid"], final = True, via = True, direct = True)
 
-		# poll/final flag is set
+
+		packetctrl = ctrl
+
+		# if packet is i frame, lets build sequence numbers for it
+		if ctrl == self.L2_CTRL_I:
+			left = self.connections[conid]["rx_seq"] << 5
+			right = self.connections[conid]["tx_seq"] << 1
+			packetctrl = (packetctrl | left | right)
+
+		# if packet is rr, lets include sequence number
+		if ctrl == self.L2_CTRL_RR:
+			left = self.connections[conid]["rx_seq"] << 5
+			packetctrl = (packetctrl | left)
+
 		if poll:
-			packet += struct.pack("<B", ctrl | self.L2_MASK_POLL)
-		else:
-			# if packet is i frame, lets build sequence numbers for it
-			if ctrl == self.L2_CTRL_I:
-				left = self.connections[conid]["rx_seq"] << 5
-				right = self.connections[conid]["tx_seq"] << 1
-				packet += struct.pack("<B", (left | right))
-			else:
-				# otherwise, just put the control bit into
-				packet += struct.pack("<B", ctrl)
+			packetctrl = packetctrl | self.L2_MASK_POLL
+
+		packet += struct.pack("<B", packetctrl)
 
 		# I Frame, set Layer 3
 		if ctrl == self.L2_CTRL_I:
@@ -388,7 +415,28 @@ class ax25udp:
 
 	def prompt(self, addr, conid):
 		# build prompt for user interaction
-		self.send(addr, conid, self.L2_CTRL_I, self.connections[conid]["src_call"] + " de " + self.connections[conid]["dst_call"] + "-" + str(self.connections[conid]["dst_ssid"]) + "> ")
+		if not self.connections[conid]["prompt"]:
+			self.connections[conid]["tx_queue"].append(self.connections[conid]["src_call"] + " de " + self.connections[conid]["dst_call"] + "-" + str(self.connections[conid]["dst_ssid"]) + "> ")
+			self.connections[conid]["prompt"] = True
+
+	def disconnect(self, addr, conid):
+		# send disconnect and remove connection id
+		self.send(addr, conid, self.L2_CTRL_DISC, poll = True)
+		self.conrm(conid)
+
+
+	def send_queue(self, addr, conid):
+		if (self.conupd(conid) & self.CON_MASK_CMD) > 0:
+			self.prompt(addr, conid)
+			i = 0
+			while(len(self.connections[conid]["tx_queue"]) > 0 and (self.L2_MAX_FRAME < 0 or i < self.L2_MAX_FRAME)):
+				self.conupd(conid, self.CON_STATE_ESTABLISHED)
+				self.send(addr, conid, self.L2_CTRL_I, self.connections[conid]["tx_queue"].pop(0))
+				i = i + 1
+				time.sleep(self.L2_FRAME_DELAY)
+			if len(self.connections[conid]["tx_queue"]) < 1 and self.conupd(conid) == self.CON_STATE_ESTABLISHED:
+				self.connections[conid]["prompt"] = False
+				self.conupd(conid, self.CON_STATE_WAIT)
 
 
 	def listen(self, callback = None):
@@ -404,36 +452,42 @@ class ax25udp:
 
 			# incoming packet is not for me ;-(
 			if self.connections[conid]["dst_call"] != self.my_call or self.connections[conid]["dst_ssid"] != self.my_ssid:
+				self.conrm(conid)
 				continue
 
 			# incoming packet is connection request
 			if self.connections[conid]["ctrl"] == "SABM":
 				self.conmk(conid)
+				self.conupd(conid, self.CON_STATE_NEW)
 				self.send(addr, conid, self.L2_CTRL_UA, "", poll = True)
 				# mark connections as established
-				self.conupd(conid, "ESTABLISHED")
+				self.conupd(conid, self.CON_STATE_ESTABLISHED)
 				self.send(addr, conid, self.L2_CTRL_I, self.P_MOTD)
 				if self.banner:
-					self.send(addr, conid, self.L2_CTRL_I, self.banner)
-				self.prompt(addr, conid)
+					self.connections[conid]["tx_queue"].append(self.banner)
+				continue
 
 			# incoming packet is info frame
 			if self.connections[conid]["ctrl"] == "I":
 				# if no connection established, send disc
-				if self.conupd(conid) != "ESTABLISHED":
+				if (self.conupd(conid) | self.CON_MASK_CMD) < 1:
 					self.send(addr, conid, self.L2_CTRL_DISC, poll = True)
+					self.conrm(conid)
 					continue
+
+				# resume connection state
+				self.conupd(conid, self.CON_STATE_ESTABLISHED)
 
 				# if callback is set, run into more functions
 				# callback have to return (disc, tosend):
 				# disc   = bool, Should connection be disconnected? Maybe request from user?
 				# tosend = string, should we send an output to connected user?
 				if not callback == None:
+					self.send(addr, conid, self.L2_CTRL_I, "")
 					(disc, tosend) = callback(self.connections[conid]["src_call"], self.connections[conid]["info"])
 					# if disconnect request received, send DISC
 					if disc:
-						self.send(addr, conid, self.L2_CTRL_DISC, poll = True)
-						self.conrm(conid)
+						self.disconnect(addr, conid)
 						continue
 					# if we have to send output, make sure that newline is set,
 					# buffer the string and send i frame packet
@@ -443,18 +497,43 @@ class ax25udp:
 						while len(tosend)>0:
 							plen = len(tosend)
 							if len(tosend) > self.L2_INFOLEN:	plen = self.L2_INFOLEN
-							self.send(addr, conid, self.L2_CTRL_I, tosend[0:plen])
+							self.connections[conid]["tx_queue"].append(tosend[0:plen])
 							tosend = tosend[plen:]
-				# send prompt back
-				self.prompt(addr, conid)
+						self.send_queue(addr, conid)
+						continue
+
+				self.send_queue(addr, conid)
+				continue
 
 			# incoming packet is disconnect request
 			if self.connections[conid]["ctrl"] == "DISC":
 				# only respond to existing connections
-				if self.conupd(conid) == "ESTABLISHED":
-					self.send(addr, conid, self.L2_CTRL_UA, poll = True)
-					self.conrm(conid)
+				if (self.conupd(conid) & self.CON_MASK_CMD) > 0:
+					self.disconnect(addr, conid)
+					continue
 
+			# incoming packet is receive ack
+			if self.connections[conid]["ctrl"] == "RR" and self.conupd(conid) == self.CON_STATE_ESTABLISHED:
+				self.send_queue(addr, conid)
+				continue
+
+			# keep alive
+			if self.connections[conid]["ctrl"] == "RR" and (self.conupd(conid) & self.CON_MASK_CMD) > 0 and self.connections[conid]["poll"] > 0:
+				poll = False
+				if self.connections[conid]["poll"] > 0: 	poll = True
+				self.send(addr, conid, self.L2_CTRL_RR, poll = poll)
+				continue
+
+			# peer rejects packet
+			if "REJ" in self.connections[conid]["ctrl"] or "FRMR" in self.connections[conid]["ctrl"]:
+				self.disconnect(addr, conid)
+				continue
+
+
+			# other packets with unknown session, discard session
+			if (self.conupd(conid) & self.CON_MASK_CMD) < 1:
+				self.conrm(conid)
+				continue
 
 			# many more to fix here,
 			# have to check if frames received from peer correctly,
